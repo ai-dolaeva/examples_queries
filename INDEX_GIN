@@ -1,0 +1,95 @@
+CREATE TABLE news(
+	id SERIAL PRIMARY KEY, 
+	headline text,
+	news_text text
+);
+
+-- указать полный путь
+COPY news (headline, news_text)
+FROM 'news_gin.csv' WITH (FORMAT csv);
+
+-- количество данных
+-- Select count(*) from news;
+
+-- создание своей кофигурации
+CREATE TEXT SEARCH CONFIGURATION public.myconf ( COPY = pg_catalog.english );
+
+ALTER TEXT SEARCH CONFIGURATION myconf
+ALTER MAPPING FOR asciiword, hword_asciipart,
+word, hword, hword_part
+WITH pg_catalog.english_stem;
+-- исключение ненужных типов
+ALTER TEXT SEARCH CONFIGURATION myconf
+DROP MAPPING FOR email, url, url_path, sfloat, float, numword,
+numhword, host, int, uint, version;
+
+-- можно посмотреть разницу
+SELECT * FROM ts_parse('default','Thats 79 my :(*:%::( first own parser');
+SELECT * FROM ts_parse('myconf','Thats 79 my :(*:%::( first own parser');
+
+-- добавление столбца типа tsvector	
+ALTER TABLE news ADD  doc_tsv tsvector;
+-- добавление нормализованных данных в столбец "doc_tsv" на основе новой конфигурации для одого столбца
+UPDATE news SET doc_tsv = to_tsvector('myconf', news_text);
+-- добавление нормализованных данных в столбец "doc_tsv" на основе новой конфигурации для двух столбцов
+-- UPDATE news SET doc_tsv=
+-- setweight( coalesce( to_tsvector('myconf', headline),''),'A')|| ' ' ||
+-- setweight( coalesce( to_tsvector('myconf', news_text),''),'B');
+
+SELECT * FROM news ORDER BY id LIMIT 5;
+
+-- поиск без индекса с ранжированием
+SELECT headline, news_text, ts_rank_cd(doc_tsv, q)
+FROM news, 
+to_tsquery('education & program') q 
+WHERE doc_tsv @@ q ORDER BY ts_rank_cd DESC
+
+-- поиск без индекса с ранжированием с указанием весов
+SELECT headline, news_text, ts_rank_cd('{0.1,1.0,0.2,0.4}', doc_tsv, q)
+FROM news,
+to_tsquery('education & program:a') q
+WHERE doc_tsv @@ q ORDER BY ts_rank_cd DESC;
+
+-- символ * для поика всех слов начинающих с определенной последовательности
+-- SELECT news_text FROM news
+-- WHERE doc_tsv @@ to_tsquery('prog:*');
+
+-- создание индекса
+CREATE INDEX ind_news ON news USING gin(doc_tsv);
+
+-- поиск с индексом с ранжированием
+SELECT headline, news_text, ts_rank_cd(doc_tsv, q)
+FROM news, 
+to_tsquery('education & program') q 
+WHERE doc_tsv @@ q ORDER BY ts_rank_cd DESC
+
+-- можно посмотреть TIDы (индексы)
+-- SELECT ctid, news_text, doc_tsv FROM news GROUP BY id;
+
+-- можно посмотреть лексемы по популярности
+-- SELECT (unnest(doc_tsv)).lexeme, count(*)
+-- FROM news
+-- GROUP BY 1 ORDER BY 2 DESC;
+
+-- создание триггера для обновления столбца doc_tsv
+CREATE TRIGGER tsvectorupdate BEFORE INSERT OR UPDATE
+ON news FOR EACH ROW EXECUTE PROCEDURE
+tsvector_update_trigger(doc_tsv, 'public.myconf', news_text);
+
+-- добавление новой строки
+INSERT INTO news (headline, news_text) VALUES('new title', 'a text of news');
+
+-- проверяем
+SELECT * FROM news ORDER BY id DESC;
+
+-- поиск тоже должен выдавать
+SELECT news_text
+FROM news, to_tsquery('text & news') q 
+WHERE doc_tsv @@ q 
+
+-- удаляем с облегченным сердцем
+-- DROP INDEX ind_news;
+-- DROP TEXT SEARCH CONFIGURATION public.myconf
+-- DROP TRIGGER tsvectorupdate ON news
+-- DROP TABLE news;
+
